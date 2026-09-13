@@ -18,7 +18,7 @@ class Game:
 
         self.screen_size = 1000
         self.screen = pygame.display.set_mode((self.screen_size, self.screen_size))
-        pygame.display.set_caption("Like and Subscribe")
+        pygame.display.set_caption("all the best")
         self.font = pygame.font.SysFont(None, 36)
         self.clock = pygame.time.Clock()
         self.running = True
