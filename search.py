@@ -1,89 +1,348 @@
-from board import Board
-from evaluate import Evaluate
+## SEARCH ENGINE
+##
+## Iterative-deepening negamax with:
+##   * alpha-beta pruning and principal-variation search (PVS)
+##   * transposition table keyed by incremental Zobrist hash
+##   * quiescence search (captures/promotions, and full evasions in check)
+##     so the engine never stops thinking in the middle of a trade
+##   * null-move pruning, late-move reductions and check extensions
+##   * killer moves + history heuristic + MVV-LVA move ordering
+##   * repetition and fifty-move draw detection inside the tree
+##
+## A Search instance keeps its transposition table and history between moves,
+## so thinking gets cheaper as the game goes on. On timeout the engine
+## returns the best move from the last completed depth; the search runs on a
+## throwaway copy of the board, so an aborted search never corrupts the game.
+
+import time
+
+from board import (
+    Board, FLAG_EP, PAWN, QUEEN, move_from, move_to, move_promo, move_flag,
+)
+from evaluate import evaluate as evaluate_board
+
+MATE = 30000
+INF = MATE + 200
+MAX_PLY = 128
+
+TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
+
+VAL = (0, 100, 320, 330, 500, 900, 10000)
+
+
+class SearchTimeout(Exception):
+    pass
+
 
 class Search:
     def __init__(self):
-        self.evaluate = Evaluate()
-        pass
+        self.tt = {}
+        self.eval_cache = {}
+        self.history_heur = {}
+        self.board = None
+        self.nodes = 0
+        self.deadline = 0.0
+        self.killers = [[0, 0] for _ in range(MAX_PLY + 2)]
 
-    def copy_board(self, board):
-        new_board = Board()
-        new_board.state = [r[:] for r in board.state]
-        new_board.white_king_moved = board.white_king_moved
-        new_board.black_king_moved = board.black_king_moved
-        new_board.white_rook_a_moved = board.white_rook_a_moved
-        new_board.white_rook_h_moved = board.white_rook_h_moved
-        new_board.black_rook_a_moved = board.black_rook_a_moved
-        new_board.black_rook_h_moved = board.black_rook_h_moved
-        return new_board
+    def _evaluate(self):
+        """Static eval memoised by position hash -- quiescence re-evaluates
+        the same positions constantly, so this pays for itself many times."""
+        board = self.board
+        cached = self.eval_cache.get(board.hash)
+        if cached is None:
+            cached = evaluate_board(board)
+            if len(self.eval_cache) > 2_000_000:
+                self.eval_cache.clear()
+            self.eval_cache[board.hash] = cached
+        return cached
 
-    def move_order_score(self, board, move):
-        target_piece = board.state[move[2]][move[3]]
+    ## ---------- public API ----------
 
-        score = 0
+    def find_best_move(self, board, max_depth=64, time_limit=2.0,
+                       noise=0.0, rng=None):
+        """Returns (move, score_from_mover_pov, completed_depth, nodes).
 
-        ## PROMOTIONS FIRST
-        if move[4] is not None:
-            score += 100
+        noise > 0 plays weaker-but-varied: the root is searched with full
+        windows to a shallow depth and the choice is perturbed by Gaussian
+        noise, giving a natural casual strength instead of rigid play."""
+        self.board = board
+        self.deadline = time.time() + max(time_limit, 0.05)
+        self.nodes = 0
+        self.killers = [[0, 0] for _ in range(MAX_PLY + 2)]
 
-        ## CAPTURES FIRST
-        if target_piece != 0 and target_piece != 7 and target_piece != -7:
-            score += abs(target_piece) * 10
+        root = board.gen_legal()
+        if not root:
+            return None, 0, 0, 0
+        if len(root) == 1:
+            return root[0], 0, 0, 0
 
-        return score
+        exact_root = noise > 0.0
+        if exact_root:
+            ## Full-window root search keeps every score exact for the noise
+            ## pick, which costs ~branching-factor more per iteration; cap
+            ## the depth so the time budget still holds.
+            max_depth = min(max_depth, 4)
 
-    def minmax(self, board, team, depth, alpha=-99999, beta=99999):
-        legal_moves = board.get_all_legal_moves(team)
+        scores = dict.fromkeys(root, -INF)
+        best_move = root[0]
+        best_score = -INF
+        completed = 0
 
-        if len(legal_moves) == 0:
-            white_in_check, black_in_check, white_king_pos, black_king_pos = board.king_check_check()
+        try:
+            for depth in range(1, max_depth + 1):
+                alpha = -INF
+                beta = INF
+                iter_best = None
+                for m in sorted(root, key=lambda x: scores[x], reverse=True):
+                    board.make(m)
+                    if exact_root or iter_best is None:
+                        ## Full window keeps every root score exact (needed
+                        ## for the noise pick); the search never tightens
+                        ## alpha in that mode.
+                        score = -self._negamax(depth - 1, -INF, INF, 1)
+                    else:
+                        score = -self._negamax(depth - 1, -alpha - 1, -alpha, 1)
+                        if score > alpha:
+                            score = -self._negamax(depth - 1, -beta, -alpha, 1)
+                    board.undo()
+                    scores[m] = score
+                    if iter_best is None or score > alpha:
+                        alpha = score
+                        iter_best = m
+                if exact_root and rng is not None:
+                    noisy = {m: scores[m] + rng.gauss(0, noise) for m in root}
+                    iter_best = max(root, key=noisy.get)
+                    alpha = scores[iter_best]
+                best_move = iter_best
+                best_score = alpha
+                completed = depth
+        except SearchTimeout:
+            pass
 
-            if team == 1:
-                if white_in_check:
-                    return -1000 - depth, None
+        return best_move, best_score, completed, self.nodes
+
+    ## ---------- internals ----------
+
+    def _check_time(self):
+        if self.nodes % 2048 == 0 and time.time() > self.deadline:
+            raise SearchTimeout
+
+    def _negamax(self, depth, alpha, beta, ply, can_null=True):
+        self.nodes += 1
+        self._check_time()
+        board = self.board
+
+        if board.halfmove >= 100 or (ply > 0 and board.is_repetition(2)):
+            return 0
+
+        in_chk = board.in_check(board.side)
+        if in_chk:
+            depth += 1  # check extension
+
+        if depth <= 0 or ply >= MAX_PLY:
+            return self._qsearch(alpha, beta, ply)
+
+        ## Transposition table
+        key = board.hash
+        tte = self.tt.get(key)
+        tt_move = 0
+        if tte is not None:
+            tt_depth, tt_score, tt_flag, tt_move = tte
+            if tt_depth >= depth and ply > 0:
+                s = tt_score
+                if s > MATE - 1000:
+                    s -= ply
+                elif s < -MATE + 1000:
+                    s += ply
+                if tt_flag == TT_EXACT:
+                    return s
+                if tt_flag == TT_LOWER and s >= beta:
+                    return s
+                if tt_flag == TT_UPPER and s <= alpha:
+                    return s
+
+        ## Null-move pruning: give the opponent a free move; if our position
+        ## still stands off with a reduced search, this node is too good to
+        ## need full effort (skipped in check / pawn-only endings: zugzwang).
+        if (can_null and not in_chk and depth >= 3
+                and beta < MATE - 1000
+                and board.has_non_pawn_material(board.side)):
+            r = 3 if depth >= 6 else 2
+            board.make_null()
+            score = -self._negamax(depth - 1 - r, -beta, -beta + 1, ply + 1, False)
+            board.undo_null()
+            if score >= beta:
+                return beta
+
+        moves = board.gen_pseudo(board.side)
+        moves = self._order(moves, tt_move, ply)
+
+        best = -INF
+        best_move = 0
+        legal = 0
+        old_alpha = alpha
+        them_occ = board.occ[board.side ^ 1]
+
+        for i, m in enumerate(moves):
+            to = (m >> 6) & 63
+            is_cap = ((m >> 16) & 7) == FLAG_EP or (them_occ >> to) & 1
+            is_promo = ((m >> 12) & 7) != 0
+
+            board.make(m)
+            if board.attacked_by(board.side, board.king_square(board.side ^ 1)):
+                board.undo()
+                continue
+            legal += 1
+
+            if legal == 1:
+                score = -self._negamax(depth - 1, -beta, -alpha, ply + 1)
+            else:
+                may_reduce = (i >= 4 and depth >= 3 and not in_chk
+                              and not is_cap and not is_promo)
+                if may_reduce and board.in_check(board.side):
+                    may_reduce = False  # don't reduce check-giving moves
+                d = depth - 2 if may_reduce else depth - 1
+                score = -self._negamax(d, -alpha - 1, -alpha, ply + 1)
+                if score > alpha and (may_reduce or score < beta):
+                    score = -self._negamax(depth - 1, -beta, -alpha, ply + 1)
+            board.undo()
+
+            if score > best:
+                best = score
+                best_move = m
+                if score > alpha:
+                    alpha = score
+                    if alpha >= beta:
+                        if not is_cap:
+                            ks = self.killers[ply]
+                            if ks[0] != m:
+                                ks[1] = ks[0]
+                                ks[0] = m
+                            hk = (board.side << 20) | (m & 0xFFFFF)
+                            self.history_heur[hk] = self.history_heur.get(hk, 0) + depth * depth
+                        break
+
+        if legal == 0:
+            return -MATE + ply if in_chk else 0
+
+        if best >= beta:
+            flag, stored = TT_LOWER, best
+        elif best > old_alpha:
+            flag, stored = TT_EXACT, best
+        else:
+            flag, stored = TT_UPPER, best
+        if stored > MATE - 1000:
+            stored += ply
+        elif stored < -MATE + 1000:
+            stored -= ply
+        if len(self.tt) > 1_200_000:
+            self.tt.clear()
+        self.tt[key] = (depth, stored, flag, best_move)
+        return best
+
+    def _qsearch(self, alpha, beta, ply):
+        self.nodes += 1
+        self._check_time()
+        board = self.board
+        if ply >= MAX_PLY:
+            return self._evaluate()
+
+        in_chk = board.in_check(board.side)
+        them_occ = board.occ[board.side ^ 1]
+        best = -INF
+
+        if not in_chk:
+            best = self._evaluate()
+            if best >= beta:
+                return best
+            if best > alpha:
+                alpha = best
+
+            ## Captures and queen promotions only, MVV-LVA ordered.
+            tactical = []
+            for m in board.gen_pseudo(board.side):
+                to = (m >> 6) & 63
+                promo = (m >> 12) & 7
+                if ((m >> 16) & 7) == FLAG_EP:
+                    victim = PAWN
+                elif (them_occ >> to) & 1:
+                    victim = board._type_at(to, board.side ^ 1)
                 else:
-                    return 0, None
+                    if promo != QUEEN:
+                        continue
+                    victim = 0
+                tactical.append((VAL[victim] * 100 - VAL[board._type_at(m & 63, board.side)], m))
+            tactical.sort(reverse=True)
 
-            if team == -1:
-                if black_in_check:
-                    return 1000 + depth, None
+            for _, m in tactical:
+                ## Delta pruning: skip captures that cannot raise alpha
+                if not ((m >> 12) & 7) and best + 220 <= alpha:
+                    continue
+                board.make(m)
+                if board.attacked_by(board.side, board.king_square(board.side ^ 1)):
+                    board.undo()
+                    continue
+                score = -self._qsearch(-beta, -alpha, ply + 1)
+                board.undo()
+                if score > best:
+                    best = score
+                    if score > alpha:
+                        alpha = score
+                        if score >= beta:
+                            return score
+            return best
+
+        ## In check we must look at every evasion -- a "quiet" move here may
+        ## be the only thing standing between us and mate.
+        legal = 0
+        for m in board.gen_pseudo(board.side):
+            board.make(m)
+            if board.attacked_by(board.side, board.king_square(board.side ^ 1)):
+                board.undo()
+                continue
+            legal += 1
+            score = -self._qsearch(-beta, -alpha, ply + 1)
+            board.undo()
+            if score > best:
+                best = score
+                if score > alpha:
+                    alpha = score
+                    if score >= beta:
+                        return score
+        if legal == 0:
+            return -MATE + ply
+        return best
+
+    def _order(self, moves, tt_move, ply):
+        board = self.board
+        them = board.side ^ 1
+        them_occ = board.occ[them]
+        killers = self.killers[ply]
+        hist = self.history_heur
+
+        scored = []
+        for m in moves:
+            if m == tt_move:
+                s = 1 << 30
+            else:
+                to = (m >> 6) & 63
+                promo = (m >> 12) & 7
+                if ((m >> 16) & 7) == FLAG_EP:
+                    victim = PAWN
+                elif (them_occ >> to) & 1:
+                    victim = board._type_at(to, them)
                 else:
-                    return 0, None
-
-        if depth == 0:
-            return self.evaluate.evaluate(board), None
-
-        legal_moves.sort(key=lambda move: self.move_order_score(board, move), reverse=True)
-
-        best_eval = None
-        best_move = None
-
-        for m in legal_moves:
-            child_board = self.copy_board(board)
-            child_board.move_piece(m[0], m[1], m[2], m[3], m[4])
-
-            eval, dont_need = self.minmax(child_board, team * -1, depth - 1, alpha, beta)
-
-            match team:
-                case 1:
-                    if best_eval is None or eval > best_eval:
-                        best_eval = eval
-                        best_move = m
-
-                    if best_eval > alpha:
-                        alpha = best_eval
-
-                case -1:
-                    if best_eval is None or eval < best_eval:
-                        best_eval = eval
-                        best_move = m
-
-                    if best_eval < beta:
-                        beta = best_eval
-
-            print('move:', m, 'eval:', eval)
-
-            if beta <= alpha:
-                break
-        
-        return best_eval, best_move
+                    victim = 0
+                if victim:
+                    s = (1 << 26) + VAL[victim] * 64 - VAL[board._type_at(m & 63, board.side)]
+                elif promo:
+                    s = (1 << 25) + promo
+                elif m == killers[0]:
+                    s = 1 << 24
+                elif m == killers[1]:
+                    s = (1 << 24) - 1
+                else:
+                    s = hist.get((board.side << 20) | (m & 0xFFFFF), 0)
+            scored.append((s, m))
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
