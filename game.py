@@ -345,6 +345,13 @@ class Game:
 
     def _rebuild_captured(self):
         self.captured = {1: [], -1: []}
+        for i, hist in enumerate(self.board.history):
+            cap_type = hist[1]
+            if cap_type:
+                if i % 2 == 0:
+                    self.captured[1].append(-cap_type)
+                else:
+                    self.captured[-1].append(cap_type)
 
     ## ---------- moves ----------
 
@@ -505,6 +512,13 @@ class Game:
                         self.pending_promo = None
                         return
                 return  # must pick a piece
+            # Check panel buttons
+            if hasattr(self, 'panel_buttons'):
+                for btn in self.panel_buttons:
+                    if btn.clicked(event):
+                        self.play("click")
+                        btn.on_click()
+                        return
             if (self.engine_thread is None
                     and self.board.side == colour_index(self.player_colour)):
                 self.handle_click_board(event.pos)
@@ -781,21 +795,45 @@ class Game:
     def draw_menu(self):
         surf = self.screen
         surf.fill(BG)
+
+        ## Mini decorative chess board pattern in the background
+        mini_sq = 40
+        board_total = mini_sq * 8
+        bx0 = (WINDOW_W - board_total) // 2
+        by0 = (WINDOW_H - board_total) // 2 - 20
+        for r in range(8):
+            for c in range(8):
+                light = (r + c) % 2 == 0
+                base = pygame.Color(LIGHT_SQ) if light else pygame.Color(DARK_SQ)
+                tile = pygame.Surface((mini_sq, mini_sq), pygame.SRCALPHA)
+                tile.fill((*base[:3], 22))
+                surf.blit(tile, (bx0 + c * mini_sq, by0 + r * mini_sq))
+
         ## Soft radial-ish backdrop: layered rounded squares
-        for i, alpha in ((180, 16), (130, 12), (80, 8)):
+        for i, alpha in ((180, 20), (130, 14), (80, 10)):
             rect = pygame.Rect(0, 0, i * 4, i * 4)
             rect.center = (WINDOW_W // 2, WINDOW_H // 2 - 40)
             layer = pygame.Surface(rect.size, pygame.SRCALPHA)
             pygame.draw.rect(layer, (*pygame.Color(ACCENT)[:3], alpha), rect, border_radius=40)
             surf.blit(layer, rect.topleft)
 
+        ## Knight icon
         knight = self.piece_images[-2]
-        surf.blit(knight, (WINDOW_W // 2 - knight.get_width() // 2, 120))
-        title = self.f_big.render("PyChess", True, TEXT)
-        surf.blit(title, title.get_rect(center=(WINDOW_W // 2, 250)))
-        sub = self.f_ui.render("bitboard engine -- pick your side", True, TEXT_DIM)
-        surf.blit(sub, sub.get_rect(center=(WINDOW_W // 2, 292)))
+        surf.blit(knight, (WINDOW_W // 2 - knight.get_width() // 2, 100))
 
+        ## Title
+        title = self.f_big.render("PyChess", True, TEXT)
+        surf.blit(title, title.get_rect(center=(WINDOW_W // 2, 230)))
+
+        ## Subtitle with version info
+        sub = self.f_ui.render("bitboard engine  ·  v1.0", True, TEXT_DIM)
+        surf.blit(sub, sub.get_rect(center=(WINDOW_W // 2, 272)))
+
+        ## Tagline
+        tag = self.f_small.render("pick your side to begin", True, TEXT_DIM)
+        surf.blit(tag, tag.get_rect(center=(WINDOW_W // 2, 300)))
+
+        ## Menu buttons (with extra spacing from tagline)
         for b in self.menu_buttons.values():
             b.draw(surf)
 

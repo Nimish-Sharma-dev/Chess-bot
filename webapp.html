@@ -3,132 +3,306 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PyChess</title>
+<title>PyChess — Bitboard Engine</title>
 <style>
   :root {
-    --bg: #b58863; --panel: #8a6244; --edge: #6f4d33; --accent: #5b9dff;
-    --text: #fbf3e4; --dim: #f0dcbc; --light: #f0d9b5; --dark: #b58863;
+    --bg: #161a22; --board-light: #f0d9b5; --board-dark: #b58863;
+    --panel: #21262d; --panel-border: #30363d; --edge: #30363d;
+    --accent: #58a6ff; --accent-hover: #79b8ff;
+    --text: #f0f6fc; --dim: #8b949e; --danger: #f85149; --danger-hover: #da3633;
+    --success: #3fb950;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    overflow-x: hidden;
   }
-  .app { display: flex; gap: 24px; padding: 24px; max-width: 1200px; width: 100%; justify-content: center; }
+
+  /* ---- Landing Page ---- */
+  #landing {
+    position: fixed; inset: 0; z-index: 100;
+    background: radial-gradient(circle at 50% 30%, #1f2937 0%, #0d1117 70%);
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.5s ease, visibility 0.5s ease;
+  }
+  #landing.hidden {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .landing-card {
+    background: rgba(22, 27, 34, 0.85);
+    border: 1px solid #30363d;
+    backdrop-filter: blur(16px);
+    border-radius: 20px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 1px 1px rgba(255, 255, 255, 0.05);
+    text-align: center; max-width: 460px; width: 92%; padding: 40px 32px;
+  }
+  .landing-icon {
+    font-size: 72px; line-height: 1;
+    color: var(--accent);
+    filter: drop-shadow(0 0 24px rgba(88, 166, 255, 0.5));
+    margin-bottom: 12px;
+    animation: float 3s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  .landing-title {
+    font-size: 44px; font-weight: 800;
+    color: #ffffff;
+    letter-spacing: -0.5px;
+    margin-bottom: 6px;
+  }
+  .landing-sub {
+    font-size: 14px; color: var(--dim); letter-spacing: 1.2px;
+    text-transform: uppercase; font-weight: 600; margin-bottom: 30px;
+  }
+  .landing-group { margin-bottom: 20px; text-align: left; }
+  .landing-label {
+    display: block; font-size: 12px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-weight: 600;
+  }
+  .landing-options { display: flex; gap: 8px; }
+  .landing-options button {
+    flex: 1; padding: 10px 0; border-radius: 10px;
+    background: #161b22; border: 1.5px solid #30363d; color: var(--text);
+    font-size: 14px; font-weight: 500; cursor: pointer; transition: all .15s ease;
+  }
+  .landing-options button:hover { border-color: var(--accent); color: #fff; background: #21262d; }
+  .landing-options button.active {
+    background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 700;
+    box-shadow: 0 0 16px rgba(88, 166, 255, 0.4);
+  }
+  #btnPlay {
+    margin-top: 14px; width: 100%; padding: 15px 0; border-radius: 12px;
+    background: linear-gradient(135deg, #58a6ff, #1f6feb);
+    border: none; color: #ffffff;
+    font-size: 18px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4);
+    transition: transform .15s, box-shadow .15s;
+  }
+  #btnPlay:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 28px rgba(31, 111, 235, 0.6);
+  }
+  .landing-features {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 24px;
+  }
+  .landing-badge {
+    font-size: 11px; padding: 4px 10px; border-radius: 20px;
+    background: rgba(110, 118, 129, 0.15); color: var(--dim);
+    border: 1px solid rgba(110, 118, 129, 0.2);
+  }
+
+  /* ---- App Container ---- */
+  .app {
+    display: none; gap: 24px; padding: 24px;
+    max-width: 1200px; width: 100%; justify-content: center;
+  }
+  .app.visible { display: flex; }
+
+  /* ---- Side Panel ---- */
   .panel {
-    background: var(--panel); border: 1px solid var(--edge); border-radius: 14px;
-    width: 300px; padding: 18px; display: flex; flex-direction: column; gap: 10px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 16px;
+    width: 320px; padding: 20px; display: flex; flex-direction: column; gap: 12px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
   }
-  h1 { font-size: 26px; color: var(--accent); }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  h1 { font-size: 24px; font-weight: 700; color: var(--accent); }
   .row { display: flex; gap: 8px; }
+
   button {
-    background: var(--edge); color: var(--text); border: 1px solid var(--edge);
-    border-radius: 9px; padding: 9px 12px; cursor: pointer; font-size: 14px;
-    transition: background .15s;
+    background: #2b323c; color: var(--text); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; font-weight: 500;
+    transition: all .15s ease;
   }
-  button:hover { background: #7d5a3e; }
-  button.primary { background: var(--accent); color: #0d1117; font-weight: 600; }
-  button.primary:hover { background: #7db1ff; }
+  button:hover { background: #38424f; border-color: #444d56; }
+  button.primary {
+    background: var(--accent); color: #0d1117; font-weight: 600; border-color: var(--accent);
+  }
+  button.primary:hover { background: var(--accent-hover); }
+  button.danger {
+    background: #361f22; color: #ff7b72; border-color: rgba(248, 81, 73, 0.4);
+  }
+  button.danger:hover { background: var(--danger); color: #fff; }
+
   select {
-    background: var(--edge); color: var(--text); border: 1px solid var(--edge);
-    border-radius: 9px; padding: 9px; font-size: 14px;
+    background: #161b22; color: var(--text); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 500;
   }
+
   .controls {
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
   .controls select, .controls button {
-    width: 100%; height: 42px; padding: 0 10px; font-size: 14px;
+    width: 100%; height: 38px; padding: 0 10px; font-size: 13px;
   }
   .controls .span2 { grid-column: 1 / -1; }
-  .status { color: var(--dim); font-size: 14px; min-height: 20px; }
-  .status b { color: var(--text); }
+
+  .status {
+    color: var(--dim); font-size: 13px; min-height: 20px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .status b { color: var(--text); font-weight: 600; }
+
+  /* ---- Board & Eval ---- */
   .boardwrap { position: relative; }
   #board {
     width: 640px; height: 640px; display: grid;
     grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
-    border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 8px #5f4128, 0 18px 40px rgba(0,0,0,.45);
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 0 0 10px #2b323c, 0 20px 48px rgba(0, 0, 0, 0.6);
     user-select: none; touch-action: none;
   }
   .sq { position: relative; width: 100%; height: 100%; cursor: pointer; }
-  .sq.light { background: var(--light); }
-  .sq.dark  { background: var(--dark); }
+  .sq.light { background: var(--board-light); }
+  .sq.dark  { background: var(--board-dark); }
   .sq .pc {
     position: absolute; inset: 4%;
     background-size: contain; background-repeat: no-repeat; background-position: center;
     cursor: grab; pointer-events: none;
   }
   .sq.last::after {
-    content: ""; position: absolute; inset: 0; background: rgba(246,236,110,.45);
+    content: ""; position: absolute; inset: 0; background: rgba(246, 236, 110, 0.45);
   }
   .sq.check::after {
-    content: ""; position: absolute; inset: 0; background: rgba(214,59,59,.55);
+    content: ""; position: absolute; inset: 0; background: rgba(214, 59, 59, 0.6);
   }
-  .sq.sel { outline: 3px solid #208f5a; outline-offset: -3px; }
+  .sq.sel { outline: 3.5px solid #2ea043; outline-offset: -3.5px; }
   .dot {
-    position: absolute; left: 50%; top: 50%; width: 22%; height: 22%;
-    transform: translate(-50%,-50%); border-radius: 50%;
-    background: rgba(20,20,20,.34); pointer-events: none;
+    position: absolute; left: 50%; top: 50%; width: 24%; height: 24%;
+    transform: translate(-50%, -50%); border-radius: 50%;
+    background: rgba(20, 20, 20, 0.35); pointer-events: none;
   }
   .ring {
     position: absolute; inset: 6%; border-radius: 50%;
-    border: 6px solid rgba(20,20,20,.34); pointer-events: none;
+    border: 6px solid rgba(20, 20, 20, 0.35); pointer-events: none;
   }
-  .sq:hover .pc { filter: drop-shadow(0 3px 4px rgba(0,0,0,.4)); }
+  .sq:hover .pc { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.5)); }
   .sq.drag-src .pc { visibility: hidden; }
   .drag-ghost {
     position: fixed; z-index: 50; pointer-events: none;
     background-size: contain; background-repeat: no-repeat; background-position: center;
-    filter: drop-shadow(0 8px 12px rgba(0,0,0,.5));
+    filter: drop-shadow(0 10px 16px rgba(0, 0, 0, 0.6));
   }
   body.dragging, body.dragging * { cursor: grabbing !important; }
-  .bar { display: flex; gap: 10px; align-items: stretch; flex: 1; min-height: 0; }
+
+  .bar { display: flex; gap: 10px; align-items: stretch; flex: 1; min-height: 0; height: 260px; }
   #evalbar {
-    width: 22px; border-radius: 6px; background: #5f4128; position: relative; overflow: hidden;
+    width: 20px; border-radius: 6px; background: #161b22; position: relative; overflow: hidden;
     border: 1px solid var(--edge);
   }
-  #evalfill { position: absolute; bottom: 0; left: 0; right: 0; background: #f7f1e3; transition: height .5s; }
+  #evalfill { position: absolute; bottom: 0; left: 0; right: 0; background: #f0f6fc; transition: height .4s ease; }
   #evalmid { position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: var(--accent); }
   #moves {
-    flex: 1; background: #7a5638; border: 1px solid var(--edge); border-radius: 9px;
-    padding: 8px 10px; overflow-y: auto; min-height: 0; font-size: 14px; line-height: 1.65;
+    flex: 1; background: #161b22; border: 1px solid var(--edge); border-radius: 8px;
+    padding: 10px 12px; overflow-y: auto; font-size: 13px; line-height: 1.7; font-family: monospace;
   }
-  #moves .num { color: var(--dim); display: inline-block; width: 30px; }
+  #moves .num { color: var(--dim); display: inline-block; width: 32px; }
+
   .trays { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .tray { display: flex; flex-wrap: wrap; align-items: center; gap: 0; min-height: 28px; }
-  .tray img { width: 20px; height: 20px; margin-right: -5px; }
-  .tray .adv { color: #7ddb9a; font-size: 12.5px; margin-left: 10px; }
-  .tray .lbl { color: var(--dim); font-size: 12px; width: 46px; }
+  .tray {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0; min-height: 28px;
+    background: #161b22; border: 1px solid var(--edge); border-radius: 6px; padding: 4px 8px;
+  }
+  .tray img { width: 18px; height: 18px; margin-right: -4px; }
+  .tray .adv { color: var(--success); font-size: 12px; font-weight: 700; margin-left: 8px; }
+  .tray .lbl { color: var(--dim); font-size: 11px; width: 100%; margin-bottom: 2px; }
+
+  /* ---- Overlays ---- */
   .overlay {
-    position: absolute; inset: 0; background: rgba(0,0,0,.55); display: none;
-    align-items: center; justify-content: center; z-index: 5;
+    position: absolute; inset: 0; background: rgba(13, 17, 23, 0.75); display: none;
+    align-items: center; justify-content: center; z-index: 20; backdrop-filter: blur(4px);
+    border-radius: 10px;
   }
   .card {
-    background: var(--panel); border: 2px solid var(--accent); border-radius: 14px;
-    padding: 28px 40px; text-align: center;
+    background: var(--panel); border: 1.5px solid var(--accent); border-radius: 16px;
+    padding: 32px 36px; text-align: center; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+    max-width: 380px; width: 90%;
   }
-  .card h2 { font-size: 34px; margin-bottom: 6px; }
-  .card p { color: var(--dim); margin-bottom: 18px; }
-  .card .row button { min-width: 130px; }
-  #promo { display: none; position: absolute; z-index: 6; flex-direction: column; gap: 4px; }
-  #promo button { padding: 4px; background: #f4f0e6; border-color: var(--edge); }
-  #promo img { width: 52px; height: 52px; display: block; }
-  #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  .card h2 { font-size: 32px; margin-bottom: 6px; color: #fff; }
+  .card p { color: var(--dim); margin-bottom: 24px; font-size: 15px; }
+  .card .row { justify-content: center; gap: 8px; }
+  .card button { min-width: 90px; padding: 10px 14px; font-size: 14px; }
+
+  #promo { display: none; position: absolute; z-index: 30; flex-direction: column; gap: 4px; }
+  #promo button {
+    padding: 4px; background: #ffffff; border-radius: 8px; border: 2px solid var(--accent);
+    cursor: pointer; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  }
+  #promo img { width: 56px; height: 56px; display: block; }
+  #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
+
+  /* ---- Responsive ---- */
+  @media (max-width: 1024px) {
+    .app.visible { flex-direction: column; align-items: center; }
+    #board { width: min(92vw, 560px); height: min(92vw, 560px); }
+    .panel { width: min(92vw, 560px); }
+    .bar { height: 180px; }
+  }
 </style>
 </head>
 <body>
-<div class="app">
+
+<!-- ======== Landing Page ======== -->
+<div id="landing">
+  <div class="landing-card">
+    <div class="landing-icon">&#9822;</div>
+    <div class="landing-title">PyChess</div>
+    <div class="landing-sub">Bitboard Engine &middot; Browser &amp; Desktop</div>
+
+    <div class="landing-group">
+      <span class="landing-label">Difficulty</span>
+      <div class="landing-options" id="landingDiff">
+        <button data-val="casual">Casual</button>
+        <button data-val="club" class="active">Club</button>
+        <button data-val="master">Master</button>
+      </div>
+    </div>
+
+    <div class="landing-group">
+      <span class="landing-label">Play as</span>
+      <div class="landing-options" id="landingColor">
+        <button data-val="1" class="active">White</button>
+        <button data-val="-1">Black</button>
+      </div>
+    </div>
+
+    <button id="btnPlay">Play Now</button>
+
+    <div class="landing-features">
+      <span class="landing-badge">⚡ 64-bit Bitboards</span>
+      <span class="landing-badge">🧠 Alpha-Beta &amp; Quiescence</span>
+      <span class="landing-badge">⏱ Zobrist Hashing</span>
+      <span class="landing-badge">🔊 WebAudio SFX</span>
+    </div>
+  </div>
+</div>
+
+<!-- ======== Main Game App ======== -->
+<div class="app" id="app">
   <div class="panel">
-    <h1>&#9822; PyChess</h1>
+    <div class="panel-header">
+      <h1>&#9822; PyChess</h1>
+      <button id="btnHome" title="Return to Landing Page">🏠 Menu</button>
+    </div>
+
     <div class="status" id="status">Loading…</div>
+
     <div class="bar">
       <div id="evalbar"><div id="evalfill" style="height:50%"></div><div id="evalmid"></div></div>
       <div id="moves"></div>
     </div>
+
     <div class="trays">
-      <div class="tray" id="trayW"><span class="lbl">White took</span></div>
-      <div class="tray" id="trayB"><span class="lbl">Black took</span></div>
+      <div class="tray" id="trayW"><span class="lbl">White captured</span></div>
+      <div class="tray" id="trayB"><span class="lbl">Black captured</span></div>
     </div>
+
     <div class="controls">
       <select id="difficulty" title="Engine strength">
         <option value="casual">Casual</option>
@@ -139,9 +313,13 @@
         <option value="1" selected>White</option>
         <option value="-1">Black</option>
       </select>
-      <button class="primary span2" id="btnNew">New game</button>
-      <button id="btnUndo">Undo</button>
-      <button id="btnFlip">Flip</button>
+
+      <button class="primary span2" id="btnNew">New Game</button>
+      <button id="btnUndo">↶ Undo</button>
+      <button id="btnFlip">⇄ Flip</button>
+      <button class="danger" id="btnResign">🏳 Resign</button>
+      <button id="btnSound" title="Toggle sound">🔊 Sound</button>
+      <button class="span2" id="btnPGN">📋 Copy PGN</button>
     </div>
   </div>
 
@@ -155,11 +333,13 @@
         <div class="row">
           <button class="primary" id="btnRematch">Rematch</button>
           <button id="btnMenu">Close</button>
+          <button id="btnOverLanding">Main Menu</button>
         </div>
       </div>
     </div>
   </div>
 </div>
+
 <canvas id="confetti"></canvas>
 
 <script>
@@ -173,6 +353,7 @@ let S = null;            // last state from server
 let sel = null;          // selected square or null
 let flipped = false;
 let promoPending = null; // {from, to, promos:[]}
+let soundEnabled = true; // sound toggle state
 
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
@@ -180,6 +361,8 @@ const movesEl = document.getElementById("moves");
 const evalFill = document.getElementById("evalfill");
 const overEl = document.getElementById("over");
 const promoEl = document.getElementById("promo");
+const appEl = document.getElementById("app");
+const landingEl = document.getElementById("landing");
 
 for (let i = 0; i < 64; i++) {
   const d = document.createElement("div");
@@ -231,19 +414,19 @@ function render() {
     }
   });
 
-  // eval bar (white from bottom)
+  // Eval bar (white from bottom)
   const cp = S.eval;
   const frac = cp >= 29000 || cp <= -29000 ? (cp > 0 ? 1 : 0)
     : 1 / (1 + Math.pow(10, -cp / 400));
   evalFill.style.height = (frac * 100).toFixed(1) + "%";
 
-  // move list
+  // Move list
   movesEl.innerHTML = S.san.map((s, i) =>
     (i % 2 === 0 ? `<span class="num">${i / 2 + 1}.</span>` : "") +
     `<span>${s}</span>${i % 2 === 0 ? " " : "<br>"}`).join("");
   movesEl.scrollTop = movesEl.scrollHeight;
 
-  // trays
+  // Captured trays
   const fill = (id, codes, opp) => {
     const el = document.getElementById(id);
     el.innerHTML = '<span class="lbl">' + (id === "trayW" ? "White took" : "Black took") + "</span>";
@@ -255,7 +438,7 @@ function render() {
   fill("trayW", S.captured["1"], -1);
   fill("trayB", S.captured["-1"], 1);
 
-  // status + result
+  // Status & game outcome
   const names = {casual: "Casual", club: "Club", master: "Master"};
   let txt = `<b>${names[document.getElementById("difficulty").value]}</b> · `;
   if (S.result) txt = "Game over";
@@ -269,13 +452,17 @@ function render() {
 
   if (S.result) {
     const w = S.result.winner;
+    const reason = S.result.reason;
     document.getElementById("overTitle").textContent =
-      w === null ? "Draw" : (w === (S.player === 1 ? 0 : 1) ? "You win!" : "Engine wins");
+      reason === "resignation" ? "You Resigned" :
+      w === null ? "Draw" : (w === (S.player === 1 ? 0 : 1) ? "You Win!" : "Engine Wins");
     document.getElementById("overSub").textContent =
       {checkmate: "Checkmate", stalemate: "Stalemate", fifty: "Fifty-move rule",
-       repetition: "Threefold repetition", material: "Insufficient material"}[S.result.reason] || S.result.reason;
+       repetition: "Threefold repetition", material: "Insufficient material",
+       resignation: "Resignation"}[reason] || reason;
     overEl.style.display = "flex";
-    if (w !== null && w === (S.player === 1 ? 0 : 1)) { confettiBurst(); sfx("win"); }
+    if (reason === "resignation") sfx("lose");
+    else if (w !== null && w === (S.player === 1 ? 0 : 1)) { confettiBurst(); sfx("win"); }
     else if (w === null) sfx("draw");
     else sfx("lose");
   } else {
@@ -306,11 +493,36 @@ async function newGame() {
   render(); sfx("move");
 }
 
-// ---- board input: whole-square clicks + drag & drop ----
-// Input is mapped from pointer coordinates against the board's bounding box,
-// so every pixel inside a square registers -- no element hit-testing, no
-// "must hit the centre" behaviour.
+function showLanding() {
+  overEl.style.display = "none";
+  appEl.classList.remove("visible");
+  landingEl.classList.remove("hidden");
+}
 
+// ---- Landing Page Interactions ----
+(function initLanding() {
+  document.querySelectorAll(".landing-options").forEach(group => {
+    group.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        group.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+      });
+    });
+  });
+
+  document.getElementById("btnPlay").addEventListener("click", () => {
+    const diff = document.querySelector("#landingDiff .active").dataset.val;
+    const color = document.querySelector("#landingColor .active").dataset.val;
+    document.getElementById("difficulty").value = diff;
+    document.getElementById("colour").value = color;
+
+    landingEl.classList.add("hidden");
+    appEl.classList.add("visible");
+    newGame();
+  });
+})();
+
+// ---- Board Input: Whole-Square Clicks + Drag & Drop ----
 let drag = null; // {from, startX, startY, ghost, moved}
 
 function squareFromPoint(cx, cy) {
@@ -337,7 +549,6 @@ boardEl.addEventListener("pointerdown", e => {
   if (sq === null) return;
   e.preventDefault();
 
-  // pressing a legal destination completes the move right away
   if (sel !== null && attemptMove(sel, sq)) return;
 
   const code = S.pieces[sq];
@@ -383,7 +594,7 @@ window.addEventListener("pointerup", e => {
   drag = null;
   if (d.ghost) d.ghost.remove();
   document.querySelectorAll(".drag-src").forEach(el => el.classList.remove("drag-src"));
-  if (!d.moved) return; // plain click: selection already handled on pointerdown
+  if (!d.moved) return;
   const sq = squareFromPoint(e.clientX, e.clientY);
   if (sq !== null && sq !== d.from) attemptMove(d.from, sq);
 });
@@ -408,11 +619,9 @@ function showPromo(from, to, promos) {
 async function sendMove(from, to, promo) {
   sel = null; promoEl.style.display = "none";
   statusEl.innerHTML = "Engine thinking…";
-  const wasCheck = S.check;
   const res = await api("/api/move", {token: TOKEN, from, to, promo});
   if (!res.ok) { sfx("illegal"); }
   S = res.state;
-  // sound: compare material before/after via captured lists length
   const capNow = S.captured["1"].length + S.captured["-1"].length;
   sfx(capNow > (S._caps ?? 0) ? "capture" : "move");
   S._caps = capNow;
@@ -420,18 +629,59 @@ async function sendMove(from, to, promo) {
   render();
 }
 
+// ---- All Buttons Functional ----
 document.getElementById("btnNew").onclick = newGame;
 document.getElementById("btnRematch").onclick = newGame;
 document.getElementById("btnMenu").onclick = () => overEl.style.display = "none";
+document.getElementById("btnHome").onclick = showLanding;
+document.getElementById("btnOverLanding").onclick = showLanding;
+
 document.getElementById("btnUndo").onclick = async () => {
   const res = await api("/api/undo", {token: TOKEN});
   S = res.state; sel = null; render();
 };
+
 document.getElementById("btnFlip").onclick = () => { flipped = !flipped; render(); };
 
-// ---- tiny WebAudio SFX ----
+document.getElementById("btnResign").onclick = async () => {
+  if (!S || S.result) return;
+  if (!confirm("Are you sure you want to resign?")) return;
+  const res = await api("/api/resign", {token: TOKEN});
+  S = res.state; sel = null; render();
+};
+
+const btnSound = document.getElementById("btnSound");
+btnSound.onclick = () => {
+  soundEnabled = !soundEnabled;
+  btnSound.textContent = soundEnabled ? "🔊 Sound" : "🔇 Muted";
+};
+
+document.getElementById("btnPGN").onclick = () => {
+  if (!S || !S.san.length) return;
+  let pgn = "";
+  S.san.forEach((s, i) => {
+    if (i % 2 === 0) pgn += (i / 2 + 1) + ". ";
+    pgn += s + " ";
+  });
+  if (S.result) {
+    const w = S.result.winner;
+    if (S.result.reason === "resignation") pgn += (S.player === 1 ? "0-1" : "1-0");
+    else if (w === null) pgn += "1/2-1/2";
+    else pgn += (w === 0 ? "1-0" : "0-1");
+  }
+  pgn = pgn.trim();
+  navigator.clipboard.writeText(pgn).then(() => {
+    const btn = document.getElementById("btnPGN");
+    const orig = btn.textContent;
+    btn.textContent = "✓ Copied!";
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
+};
+
+// ---- Tiny WebAudio SFX ----
 let AC = null;
 function sfx(kind) {
+  if (!soundEnabled) return;
   try {
     AC ??= new (window.AudioContext || window.webkitAudioContext)();
     const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
@@ -453,11 +703,11 @@ function sfx(kind) {
   } catch (e) { /* audio unavailable */ }
 }
 
-// ---- confetti ----
+// ---- Confetti ----
 const cvs = document.getElementById("confetti"), ctx = cvs.getContext("2d");
 function confettiBurst() {
   cvs.width = innerWidth; cvs.height = innerHeight;
-  const cols = ["#f0546e", "#ffc345", "#56cc89", "#5b9dff", "#c480ff", "#fff0c8"];
+  const cols = ["#f0546e", "#ffc345", "#56cc89", "#58a6ff", "#bc8cff", "#fff0c8"];
   const parts = Array.from({length: 160}, () => ({
     x: Math.random() * cvs.width, y: -Math.random() * cvs.height * .5,
     vx: (Math.random() - .5) * 80, vy: 80 + Math.random() * 160,
@@ -477,8 +727,6 @@ function confettiBurst() {
     else ctx.clearRect(0, 0, cvs.width, cvs.height);
   })(t0);
 }
-
-newGame();
 </script>
 </body>
 </html>

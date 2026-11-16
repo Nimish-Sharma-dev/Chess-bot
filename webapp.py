@@ -4,7 +4,8 @@
 ## pygame app uses -- stdlib only, no frameworks. Each browser session gets
 ## its own Board + Search instance.
 ##
-## Run:  python webapp.py          ->  http://127.0.0.1:8765
+## Run:  python webapp.py          ->  http://0.0.0.0:8765
+##       PORT=3000 python webapp.py
 
 import json
 import os
@@ -17,7 +18,8 @@ from evaluate import evaluate as static_eval
 from search import Search, MATE
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HOST, PORT = "127.0.0.1", 8765
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", 8765))
 
 DIFFICULTIES = {
     "casual": dict(noise=130, time=0.8, depth=4),
@@ -36,13 +38,29 @@ class Session:
         self.player = player          # signed: +1 white, -1 black
         self.diff = DIFFICULTIES.get(difficulty, DIFFICULTIES["club"])
         self.san = []
-        self.captured = {1: [], -1: []}
         self.last = None
         self.engine = None            # (white-pov score, depth)
+        self._resigned = False
+        self._resign_winner = None
+
+    def get_captured(self):
+        """Reconstruct captures accurately from move history."""
+        caps = {1: [], -1: []}
+        for i, hist in enumerate(self.board.history):
+            cap_type = hist[1]
+            if cap_type:
+                if i % 2 == 0:
+                    caps[1].append(-cap_type)  # White moved, captured black piece
+                else:
+                    caps[-1].append(cap_type)  # Black moved, captured white piece
+        return caps
 
     def state(self):
         board = self.board
         result = board.result()
+        if self._resigned and result is None:
+            result = ("resignation", self._resign_winner)
+
         pieces = [board._code_at(sq) for sq in range(64)]
         legal = None
         if result is None and board.side == (0 if self.player == 1 else 1):
@@ -60,7 +78,7 @@ class Session:
             "san": self.san,
             "eval": static_eval(board),
             "engine": list(self.engine) if self.engine else None,
-            "captured": {str(k): v for k, v in self.captured.items()},
+            "captured": {str(k): v for k, v in self.get_captured().items()},
             "result": ({"reason": result[0], "winner": result[1]} if result else None),
         }
 
@@ -76,7 +94,7 @@ def apply_engine_move(sess):
         board.copy(), max_depth=sess.diff["depth"],
         time_limit=sess.diff["time"],
         noise=sess.diff["noise"],
-        rng=None)  # deterministic per session is fine; noise gives variety
+        rng=None)
     if move is None:
         return
     san = board.san(move)
@@ -98,20 +116,11 @@ def player_move(sess, frm, to, promo):
         return False
     m = matches[0]
 
-    mover = 1 if board.side == 0 else -1
-    if (m >> 16) & 7 == 2:  # FLAG_EP
-        cap_sq = to + 8 if mover == 1 else to - 8
-    else:
-        cap_sq = to
-    cap_code = board._code_at(cap_sq)
-
     san = board.san(m)
     board.make(m)
     sess.san.append(san)
     sess.last = (frm, to)
     sess.engine = None
-    if cap_code:
-        sess.captured[mover].append(cap_code)
 
     if board.result() is None and board.side == colour_index(-sess.player):
         apply_engine_move(sess)
@@ -127,13 +136,23 @@ def undo(sess):
         sess.san.pop() if sess.san else None
         if board.side == colour_index(sess.player):
             break
-    ## SAN entries correspond to plies; we popped one per undo above
+    sess._resigned = False
     sess.last = None
     sess.engine = None
+    # If the user is playing Black and undo brings the game back to start, let the engine play White's move
+    if sess.player == -1 and board.side == 0 and not board.history:
+        apply_engine_move(sess)
+
+
+def resign(sess):
+    """Force a resignation result."""
+    winner = 1 if sess.player == -1 else 0
+    sess._resigned = True
+    sess._resign_winner = winner
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):  # quiet console
+    def log_message(self, *args):
         pass
 
     def _send(self, code, body, ctype="application/json"):
@@ -143,11 +162,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
     def _session(self, token):
         return SESSIONS.get(token or "")
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -185,11 +216,15 @@ class Handler(BaseHTTPRequestHandler):
         token = data.get("token") or ""
         with LOCK:
             if url.path == "/api/new":
-                if len(SESSIONS) > 64:  # keep memory bounded
+                if len(SESSIONS) > 64:
                     SESSIONS.pop(next(iter(SESSIONS)))
                 player = 1 if data.get("colour", 1) == 1 else -1
-                SESSIONS[token] = Session(player, data.get("difficulty", "club"))
-                self._send(200, SESSIONS[token].state())
+                sess = Session(player, data.get("difficulty", "club"))
+                SESSIONS[token] = sess
+                # If player is Black, the engine (White) plays first
+                if player == -1:
+                    apply_engine_move(sess)
+                self._send(200, sess.state())
                 return
 
             sess = self._session(token)
@@ -206,6 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": ok, "state": sess.state()})
             elif url.path == "/api/undo":
                 undo(sess)
+                self._send(200, {"ok": True, "state": sess.state()})
+            elif url.path == "/api/resign":
+                resign(sess)
                 self._send(200, {"ok": True, "state": sess.state()})
             else:
                 self._send(404, {"error": "not found"})
